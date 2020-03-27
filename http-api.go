@@ -1,12 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/golang-migrate/migrate"
+	"github.com/golang-migrate/migrate/database/mysql"
 	"github.com/gorilla/mux"
 	"github.com/jmoiron/sqlx"
 )
@@ -56,6 +59,23 @@ func check(e error) {
 }
 
 func main() {
+	var dbs *sql.DB
+
+	dbs, err = sql.Open("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb?multiStatements=true")
+	check(err)
+
+	driver, err := mysql.WithInstance(dbs, &mysql.Config{})
+	check(err)
+
+	m, err := migrate.NewWithDatabaseInstance(
+		"file://db/migrations",
+		"mysql",
+		driver,
+	)
+	check(err)
+
+	m.Up()
+
 	db, err = sqlx.Connect("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb")
 	check(err)
 
