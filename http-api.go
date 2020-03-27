@@ -1,10 +1,10 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -54,17 +54,22 @@ var err error
 
 func check(e error) {
 	if e != nil {
-		panic(e.Error())
+		log.Fatal(e.Error())
 	}
 }
 
 func main() {
-	var dbs *sql.DB
-
-	dbs, err = sql.Open("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb?multiStatements=true")
+	db, err = sqlx.Connect("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb")
 	check(err)
 
-	driver, err := mysql.WithInstance(dbs, &mysql.Config{})
+	defer func() {
+		err := db.Close()
+		if err != nil {
+			log.Println(err.Error())
+		}
+	}()
+
+	driver, err := mysql.WithInstance(db.DB, &mysql.Config{})
 	check(err)
 
 	m, err := migrate.NewWithDatabaseInstance(
@@ -74,9 +79,7 @@ func main() {
 	)
 	check(err)
 
-	m.Up()
-
-	db, err = sqlx.Connect("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb")
+	err = m.Up()
 	check(err)
 
 	router := mux.NewRouter()
@@ -84,7 +87,10 @@ func main() {
 	router.HandleFunc("/users/add", addUser).Methods("POST")
 
 	port := ":333"
-	http.ListenAndServe(port, router)
+	err = http.ListenAndServe(port, router)
+	if err != nil && err != http.ErrServerClosed {
+		log.Panicln(err.Error())
+	}
 }
 
 func getUser(w http.ResponseWriter, r *http.Request) {
@@ -114,19 +120,29 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 func addUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	var adduser User
+	var user User
 
 	dat, err := ioutil.ReadAll(r.Body)
-	check(err)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	json.Unmarshal(dat, &adduser)
+	err = json.Unmarshal(dat, &user)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	_, err = db.NamedExec(`INSERT INTO users VALUES (:login, :id, :node_id, :avatar_url, :gravatar_id, 
 		:url, :html_url, :followers_url, :following_url, :gists_url, :starred_url, 
 		:subscriptions_url, :organizations_url, :repos_url, :events_url, :received_events_url, 
 		:type, :site_admin, :name, :company, :blog, :location, :email, :hireable, :bio, :public_repos, 
-		:public_gists, :followers, :following, :created_at, :update_at)`, adduser)
-	check(err)
+		:public_gists, :followers, :following, :created_at, :update_at)`, user)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	fmt.Fprintf(w, "New data was append")
+	_, _  = fmt.Fprintf(w, "New data was append")
 }
