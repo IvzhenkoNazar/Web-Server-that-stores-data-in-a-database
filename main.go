@@ -10,12 +10,15 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate"
 	"github.com/golang-migrate/migrate/database/mysql"
+	_ "github.com/golang-migrate/migrate/source/file"
 	"github.com/gorilla/mux"
 	"github.com/jmoiron/sqlx"
+	stan "github.com/nats-io/stan.go"
 )
 
 //User is a structur for users
 type User struct {
+	UserID              int    `json:"userid"`
 	Login               string `json:"login"`
 	ID                  int    `json:"id"`
 	Node_ID             string `json:"node_id"`
@@ -46,22 +49,14 @@ type User struct {
 	Followers           int    `json:"followers"`
 	Following           int    `json:"following"`
 	Created_At          string `json:"created_at"`
-	Update_At           string `json:"update_at"`
+	Updated_At          string `json:"updated_at"`
 }
 
 var db *sqlx.DB
 var err error
 
-func check(e error) {
-	if e != nil {
-		log.Fatal(e.Error())
-	}
-}
-
 func main() {
-	db, err = sqlx.Connect("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb")
-	check(err)
-
+	db, err = sqlx.Connect("mysql", "root:userAccess1@tcp(127.0.0.1:3306)/testdb?multiStatements=true")
 	defer func() {
 		err := db.Close()
 		if err != nil {
@@ -70,23 +65,30 @@ func main() {
 	}()
 
 	driver, err := mysql.WithInstance(db.DB, &mysql.Config{})
-	check(err)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
 	m, err := migrate.NewWithDatabaseInstance(
 		"file://db/migrations",
 		"mysql",
 		driver,
 	)
-	check(err)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
 	err = m.Up()
-	check(err)
+	if err != nil {
+		log.Println(err.Error())
+	}
 
 	router := mux.NewRouter()
 	router.HandleFunc("/users/{id}", getUser).Methods("GET")
 	router.HandleFunc("/users/add", addUser).Methods("POST")
 
 	port := ":333"
+	http.ListenAndServe(port, router)
 	err = http.ListenAndServe(port, router)
 	if err != nil && err != http.ErrServerClosed {
 		log.Panicln(err.Error())
@@ -98,20 +100,25 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 
 	getID := mux.Vars(r)
 
-	result, err := db.Queryx("SELECT * FROM users WHERE id=?", getID["id"])
-	check(err)
+	result, err := db.Queryx("SELECT * FROM users WHERE userid=?", getID["id"])
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
 	var user User
 
 	for result.Next() {
-		err := result.Scan(&user.Login, &user.ID, &user.Node_ID, &user.Avatar_URL, &user.Gravatar_ID,
-			&user.URL, &user.HTML_URL, &user.Followers_URL, &user.Following_URL, &user.Gists_URL,
-			&user.Starred_URL, &user.Subscriptions_URL, &user.Organizations_URL, &user.Repos_URL,
-			&user.Events_URL, &user.Received_Events_URL, &user.Type, &user.Site_Admin, &user.Name,
-			&user.Company, &user.Blog, &user.Location, &user.Email, &user.Hireable, &user.Bio,
+		err := result.Scan(&user.UserID, &user.Login, &user.ID, &user.Node_ID, &user.Avatar_URL,
+			&user.Gravatar_ID, &user.URL, &user.HTML_URL, &user.Followers_URL, &user.Following_URL,
+			&user.Gists_URL, &user.Starred_URL, &user.Subscriptions_URL, &user.Organizations_URL,
+			&user.Repos_URL, &user.Events_URL, &user.Received_Events_URL, &user.Type, &user.Site_Admin,
+			&user.Name, &user.Company, &user.Blog, &user.Location, &user.Email, &user.Hireable, &user.Bio,
 			&user.Public_Repos, &user.Public_Gists, &user.Followers, &user.Following, &user.Created_At,
-			&user.Update_At)
-		check(err)
+			&user.Updated_At)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
 
 	json.NewEncoder(w).Encode(user)
@@ -134,15 +141,34 @@ func addUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = db.NamedExec(`INSERT INTO users VALUES (:login, :id, :node_id, :avatar_url, :gravatar_id, 
-		:url, :html_url, :followers_url, :following_url, :gists_url, :starred_url, 
+	_, err = db.NamedExec(`INSERT INTO users VALUES (:userid, :login, :id, :node_id, :avatar_url, 
+		:gravatar_id, :url, :html_url, :followers_url, :following_url, :gists_url, :starred_url, 
 		:subscriptions_url, :organizations_url, :repos_url, :events_url, :received_events_url, 
 		:type, :site_admin, :name, :company, :blog, :location, :email, :hireable, :bio, :public_repos, 
-		:public_gists, :followers, :following, :created_at, :update_at)`, user)
+		:public_gists, :followers, :following, :created_at, :updated_at)`, user)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	_, _ = fmt.Fprintf(w, "New data was append")
 
-	_, _  = fmt.Fprintf(w, "New data was append")
+	sc, err := stan.Connect("test-cluster", "testID")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer sc.Close()
+
+	m := &user
+
+	me, err := json.Marshal(m)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := sc.Publish("foo", me); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Publish message")
 }
